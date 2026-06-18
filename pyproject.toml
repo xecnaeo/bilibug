@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bili-comments"
-version = "0.1.0"
-description = "Anonymous CLI collector for public first-level Bilibili comments"
+version = "0.2.0"
+description = "Anonymous CLI framework for public Bilibili video and comment data"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

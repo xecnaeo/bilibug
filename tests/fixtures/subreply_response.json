@@ -1,0 +1,23 @@
+{
+  "code": 0,
+  "data": {
+    "replies": [
+      {
+        "rpid": 1002,
+        "root": 1001,
+        "parent": 1001,
+        "ctime": 1700000002,
+        "like": 2,
+        "rcount": 0,
+        "state": 0,
+        "content": {"message": "脱敏子回复"},
+        "member": {
+          "mid": "43",
+          "uname": "脱敏回复者",
+          "level_info": {"current_level": 3}
+        }
+      }
+    ],
+    "page": {"num": 1, "size": 20, "count": 1}
+  }
+}

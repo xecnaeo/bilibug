@@ -1,0 +1,28 @@
+{
+  "code": 0,
+  "data": {
+    "replies": [
+      {
+        "rpid": 1001,
+        "root": 0,
+        "parent": 0,
+        "ctime": 1700000001,
+        "like": 8,
+        "rcount": 1,
+        "state": 0,
+        "content": {"message": "脱敏一级评论"},
+        "member": {
+          "mid": "42",
+          "uname": "脱敏用户",
+          "level_info": {"current_level": 5}
+        }
+      }
+    ],
+    "cursor": {
+      "all_count": 1,
+      "is_end": false,
+      "pagination_reply": {"next_offset": "cursor-2"}
+    },
+    "top": {}
+  }
+}

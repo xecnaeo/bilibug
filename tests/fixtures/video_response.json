@@ -1,0 +1,38 @@
+{
+  "code": 0,
+  "data": {
+    "aid": 123,
+    "bvid": "BV1xx411c7mD",
+    "title": "脱敏测试视频",
+    "desc": "测试简介",
+    "pic": "https://example.invalid/cover.jpg",
+    "tid": 17,
+    "tname": "单机游戏",
+    "pubdate": 1700000000,
+    "ctime": 1699990000,
+    "duration": 120,
+    "copyright": 1,
+    "state": 0,
+    "owner": {"mid": 7, "name": "脱敏UP主"},
+    "pages": [
+      {
+        "cid": 456,
+        "page": 1,
+        "part": "第一部分",
+        "duration": 120,
+        "dimension": {"width": 1920, "height": 1080, "rotate": 0}
+      }
+    ],
+    "stat": {
+      "view": 100,
+      "danmaku": 10,
+      "reply": 20,
+      "favorite": 30,
+      "coin": 40,
+      "share": 50,
+      "like": 60,
+      "now_rank": 3,
+      "his_rank": 2
+    }
+  }
+}
