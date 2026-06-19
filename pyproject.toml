@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bili-comments"
-version = "0.5.0"
+version = "0.6.0"
 description = "Anonymous CLI framework for public Bilibili video and comment data"
 readme = "README.md"
 license = "MIT"

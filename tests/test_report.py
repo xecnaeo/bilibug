@@ -6,9 +6,29 @@ from bili_comments.cli import main
 from bili_comments import content
 from bili_comments.database import Database
 from bili_comments.models import Comment, Video, VideoStats
-from bili_comments.report import generate_report
+from bili_comments.report import _lifecycle_confidence, generate_report
 
 BVID = "BV1xx411c7mD"
+
+
+@pytest.mark.parametrize(
+    "complete,platform,expected,result",
+    [
+        (True, 10, 10, "高"),
+        (True, 9, 10, "中"),
+        (True, None, 10, "中"),
+        (False, 10, 10, "低"),
+    ],
+)
+def test_lifecycle_confidence(complete, platform, expected, result) -> None:
+    assert (
+        _lifecycle_confidence(
+            complete_root_run=complete,
+            platform_replies=platform,
+            expected_replies=expected,
+        )
+        == result
+    )
 
 
 def _comment(rpid: int, *, replies: int = 0, level: int = 0) -> Comment:
@@ -111,6 +131,10 @@ def test_report_contains_aggregates_and_escapes_private_data(tmp_path) -> None:
     assert "http://" not in html and "https://" not in html
     assert "一级评论内容分析" not in html
     assert html.count("trend-line") >= 1
+    assert "一级评论生命周期" in html
+    assert "讨论迁移结论未生成" in html
+    assert "辅助：采集点互动趋势" in html
+    assert html.index("一级评论生命周期") < html.index("辅助：采集点互动趋势")
     database.close()
 
 
@@ -274,3 +298,33 @@ def test_report_cli_content_dependency_and_invalid_days(
             ]
         )
     assert exc_info.value.code == 2
+
+
+def test_report_enables_thread_analysis_only_for_complete_coverage(tmp_path) -> None:
+    database = _prepared_database(tmp_path / "db.sqlite")
+    database.connection.execute(
+        """
+        INSERT INTO comments (
+            bvid, rpid, message, ctime, like_count, reply_count, hot_rank,
+            sort_order, sort_rank, root_rpid, parent_rpid, level, pin_type,
+            state, author_mid, author_name, author_level, first_seen_at, last_seen_at
+        ) VALUES (?, 4, '第二条子回复', 1700000004, 1, 0, 0, 'thread', 1, 1, 1, 1,
+                  '', 0, 'child-two', '子回复二', 4, ?, ?)
+        """,
+        (BVID, "2026-06-19T08:00:00+00:00", "2026-06-19T08:00:00+00:00"),
+    )
+    database.connection.execute(
+        """
+        UPDATE crawl_runs SET replies_mode = 'all', status = 'completed',
+               completeness = 'complete', root_finished = 1
+        WHERE id = 1
+        """
+    )
+    database.connection.commit()
+    output = tmp_path / "report.html"
+    generate_report(database, [BVID], output)
+    html = output.read_text(encoding="utf-8")
+    assert "楼中楼覆盖率</td><td>100.0%" in html
+    assert "首次回复延迟中位数" in html
+    assert "讨论迁移结论未生成" not in html
+    database.close()
