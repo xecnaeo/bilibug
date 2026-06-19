@@ -141,4 +141,15 @@ def test_cli_returns_two_for_manifest_error_and_one_for_partial_batch(
     write_manifest(valid, f"{BVIDS[0]},time,root,true\n")
     source = FakeBatchSource({BVIDS[0]})
     monkeypatch.setattr("bili_comments.cli.BilibiliWebSource", lambda: source)
-    assert main(["--db", str(db_path), "batch", "run", str(valid)]) == 1
+    summary = tmp_path / "summary.json"
+    assert main(
+        [
+            "--db",
+            str(db_path),
+            "batch",
+            "run",
+            str(valid),
+            "--summary",
+            str(summary),
+        ]
+    ) == 1

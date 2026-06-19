@@ -11,6 +11,7 @@ from .client import BilibiliWebSource
 from .database import Database
 from .errors import BiliCommentsError, ConfigurationError
 from .exporter import ENTITY_FIELDS, export_records
+from .report import generate_report
 from .service import crawl_target, parse_bvid
 
 
@@ -35,6 +36,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     inspect = subparsers.add_parser("inspect", help="查看本地视频和抓取状态")
     inspect.add_argument("target", help="BV 号或视频 URL")
+
+    report = subparsers.add_parser("report", help="生成离线 HTML 分析报告")
+    report.add_argument("targets", nargs="*", help="BV 号或视频 URL；默认全部视频")
+    report.add_argument("--output", type=Path, required=True)
 
     batch = subparsers.add_parser("batch", help="运行和恢复批量采集")
     batch_commands = batch.add_subparsers(dest="batch_command", required=True)
@@ -82,6 +87,29 @@ def main(argv: list[str] | None = None) -> int:
                 if details is None:
                     raise BiliCommentsError(f"数据库中没有视频 {bvid}，请先执行 crawl")
                 print(json.dumps(details, ensure_ascii=False, indent=2))
+            elif args.command == "report":
+                if args.targets:
+                    bvids = []
+                    for target in args.targets:
+                        try:
+                            bvid = parse_bvid(target)
+                        except BiliCommentsError as exc:
+                            raise ConfigurationError(str(exc)) from exc
+                        if not database.has_video(bvid):
+                            raise ConfigurationError(f"数据库中没有视频 {bvid}")
+                        if bvid not in bvids:
+                            bvids.append(bvid)
+                else:
+                    bvids = [
+                        str(row["bvid"])
+                        for row in database.connection.execute(
+                            "SELECT bvid FROM videos ORDER BY bvid"
+                        )
+                    ]
+                    if not bvids:
+                        raise ConfigurationError("数据库中没有可生成报告的视频")
+                count = generate_report(database, bvids, args.output)
+                print(f"已生成 {count} 个视频的离线报告：{args.output}")
             elif args.batch_command == "status":
                 if args.batch_id is None:
                     details = {

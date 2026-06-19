@@ -1,8 +1,8 @@
 # B站视频与评论采集框架
 
-匿名、低频地采集 B站公开视频元数据、互动指标和评论，保存到 SQLite，并导出为 CSV 或 JSONL。
+匿名、低频地采集 B站公开视频元数据、互动指标和评论，保存到 SQLite，并支持数据导出和离线分析报告。
 
-当前版本：`0.3.0`，采用 [MIT License](LICENSE)。完整设计和限制见 [项目报告](PROJECT_REPORT.md)。
+当前版本：`0.4.0`，采用 [MIT License](LICENSE)。完整设计和限制见 [项目报告](PROJECT_REPORT.md)。
 
 ## 功能
 
@@ -12,11 +12,12 @@
 - 视频基础信息、分P和互动指标快照；
 - 评论当前记录与每次抓取观测历史；
 - SQLite 分页检查点和中断续抓；
-- v0.1 数据库自动迁移到 v2；
+- v0.1 数据库自动迁移到 v3；
 - 评论、视频指标和评论指标的 CSV/JSONL/Parquet 导出；
 - 本地数据状态检查；
 - CSV 目标清单、顺序批处理、失败汇总和批次恢复；
 - 可选 Parquet 导出；
+- 单文件、无外部资源的离线 HTML 数据质量与互动报告；
 - 默认离线的脱敏契约测试。
 
 ## 安装
@@ -50,7 +51,15 @@ bili-comments --db result.db export BV1xx411c7mD --entity comment-stats --format
 
 # 查看本地视频、评论数量和最近运行状态
 bili-comments --db result.db inspect BV1xx411c7mD
+
+# 为数据库中的全部视频生成离线报告
+bili-comments --db result.db report --output report.html
+
+# 只报告指定视频
+bili-comments --db result.db report BV1xx411c7mD --output report.html
 ```
+
+报告包含采集完整性、楼中楼覆盖、互动指标首末差值、评论分布和异常运行诊断。报告不包含评论正文、昵称或用户 ID；少于 3 个观测点或时间跨度不足 24 小时时，会明确标记“样本不足，不能判断趋势”。
 
 ## 批量采集
 
@@ -114,6 +123,7 @@ Parquet 是可选依赖；默认安装仍只包含 HTTP 客户端。
 - 不包含 OAuth、代理池、高并发、弹幕下载、字幕正文、用户画像或 Web UI。
 - 不包含常驻调度器；定时执行由 Windows 任务计划或 cron 负责。
 - 页面内部接口不是稳定性受保证的正式开放 API，未来变化可能需要调整 B站适配器。
+- 离线报告只基于数据库中的观测结果，不把短期差值解释为趋势。
 - 请遵守平台规则和适用法律；数据库及导出数据不应提交到公开仓库。
 
 ## 测试
