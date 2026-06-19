@@ -15,6 +15,13 @@ from .report import generate_report
 from .service import crawl_target, parse_bvid
 
 
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("必须是大于 0 的整数")
+    return number
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="匿名采集 B站视频及评论")
     parser.add_argument(
@@ -40,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     report = subparsers.add_parser("report", help="生成离线 HTML 分析报告")
     report.add_argument("targets", nargs="*", help="BV 号或视频 URL；默认全部视频")
     report.add_argument("--output", type=Path, required=True)
+    report.add_argument("--content-analysis", action="store_true", help="分析一级评论关键词与共现")
+    report.add_argument("--days", type=_positive_int, default=7, help="趋势窗口天数，默认 7")
 
     batch = subparsers.add_parser("batch", help="运行和恢复批量采集")
     batch_commands = batch.add_subparsers(dest="batch_command", required=True)
@@ -108,7 +117,13 @@ def main(argv: list[str] | None = None) -> int:
                     ]
                     if not bvids:
                         raise ConfigurationError("数据库中没有可生成报告的视频")
-                count = generate_report(database, bvids, args.output)
+                count = generate_report(
+                    database,
+                    bvids,
+                    args.output,
+                    content_analysis=args.content_analysis,
+                    days=args.days,
+                )
                 print(f"已生成 {count} 个视频的离线报告：{args.output}")
             elif args.batch_command == "status":
                 if args.batch_id is None:

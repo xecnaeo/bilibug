@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from .database import Database
+from .errors import ConfigurationError
 
 METRICS = (
     ("view_count", "播放"),
@@ -49,6 +50,35 @@ def _duration_hours(first: object, last: object) -> float:
         return 0.0
 
 
+def _as_datetime(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
+def _trend_window(observations: Sequence[Mapping[str, object]], days: int) -> list[Mapping[str, object]]:
+    dated = [
+        (parsed, row)
+        for row in observations
+        if (parsed := _as_datetime(row["observed_at"])) is not None
+    ]
+    if not dated:
+        return []
+    threshold = dated[-1][0] - timedelta(days=days)
+    return [row for observed_at, row in dated if observed_at >= threshold]
+
+
+def _gap_count(observations: Sequence[Mapping[str, object]]) -> int:
+    dates = [_as_datetime(row["observed_at"]) for row in observations]
+    valid = [value for value in dates if value is not None]
+    return sum(
+        (current - previous).total_seconds() > 36 * 60 * 60
+        for previous, current in zip(valid, valid[1:])
+    )
+
+
 def _bar_chart(title: str, values: Sequence[tuple[str, int]]) -> str:
     if not values:
         return f'<section class="chart"><h4>{escape(title)}</h4><p class="muted">无数据</p></section>'
@@ -73,6 +103,105 @@ def _bar_chart(title: str, values: Sequence[tuple[str, int]]) -> str:
     )
 
 
+def _line_chart(
+    title: str, observations: Sequence[Mapping[str, object]], field: str
+) -> str:
+    points = [
+        (parsed, int(row[field]))
+        for row in observations
+        if (parsed := _as_datetime(row["observed_at"])) is not None
+    ]
+    if not points:
+        return f'<section class="chart"><h4>{escape(title)}</h4><p class="muted">无近期观测</p></section>'
+    width, height, padding = 660, 220, 35
+    first_time, last_time = points[0][0], points[-1][0]
+    total_seconds = max(1.0, (last_time - first_time).total_seconds())
+    values = [value for _, value in points]
+    minimum, maximum = min(values), max(values)
+    value_range = max(1, maximum - minimum)
+
+    coordinates = [
+        (
+            padding
+            + (width - padding * 2)
+            * (observed_at - first_time).total_seconds()
+            / total_seconds,
+            height
+            - padding
+            - (height - padding * 2) * (value - minimum) / value_range,
+            observed_at,
+            value,
+        )
+        for observed_at, value in points
+    ]
+    segments: list[list[tuple[float, float, datetime, int]]] = [[]]
+    for point in coordinates:
+        if (
+            segments[-1]
+            and (point[2] - segments[-1][-1][2]).total_seconds() > 36 * 60 * 60
+        ):
+            segments.append([])
+        segments[-1].append(point)
+    lines = "".join(
+        f'<polyline class="trend-line" points="'
+        + " ".join(f"{x:.1f},{y:.1f}" for x, y, _, _ in segment)
+        + '" />'
+        for segment in segments
+        if len(segment) > 1
+    )
+    circles = "".join(
+        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4"><title>{escape(_timestamp(observed_at.isoformat()))}: {_number(value)}</title></circle>'
+        for x, y, observed_at, value in coordinates
+    )
+    gaps = len(segments) - 1
+    gap_text = f" · 数据缺口 {gaps}" if gaps else ""
+    return (
+        f'<section class="chart"><h4>{escape(title)}</h4>'
+        f'<p class="muted compact">{len(points)} 个点{gap_text}</p>'
+        f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="{escape(title)}">'
+        f'<text x="0" y="16" class="svg-value">最大 {_number(maximum)}</text>'
+        f'<text x="0" y="{height - 5}" class="svg-value">最小 {_number(minimum)}</text>'
+        f'{lines}{circles}</svg></section>'
+    )
+
+
+def _content_section(database: Database, bvid: str) -> str:
+    from .content import MIN_DOCUMENT_FREQUENCY, analyze_video
+
+    analysis = analyze_video(database, bvid)
+    frequency_chart = _bar_chart(
+        "高频关键词", [(item.token, item.count) for item in analysis.frequencies]
+    )
+    tfidf_rows = (
+        (
+            item.token,
+            item.count,
+            item.document_frequency,
+            f"{item.score:.4f}",
+        )
+        for item in analysis.tfidf
+    )
+    pair_rows = (
+        (item.left, item.right, item.count) for item in analysis.cooccurrences
+    )
+    empty_note = (
+        '<p class="warnings">没有词项达到最低文档频率，未生成关键词。</p>'
+        if not analysis.frequencies
+        else ""
+    )
+    return f"""
+      <h3>一级评论内容分析</h3>
+      <p class="muted">仅分析一级评论的聚合词项，不展示原文或完整单词评论。分词器 jieba {escape(analysis.analyzer_version)}；分析 {_number(analysis.document_count)} 条评论；最低文档频率 {MIN_DOCUMENT_FREQUENCY}。</p>
+      {empty_note}
+      <div class="chart-grid">
+        {frequency_chart}
+        <section class="chart"><h4>TF-IDF 关键词</h4>{_table(('词项', '次数', '评论数', '得分'), tfidf_rows)}</section>
+      </div>
+      <h4 class="subheading">关键词共现</h4>
+      {_table(('词项 A', '词项 B', '共同出现的评论数'), pair_rows)}
+    """
+
+
 def _table(headers: Sequence[str], rows: Iterable[Sequence[object]]) -> str:
     body = []
     for row in rows:
@@ -95,7 +224,13 @@ def _bucket(value: int, limits: Sequence[tuple[int, str]], fallback: str) -> str
     return fallback
 
 
-def _video_section(database: Database, video: Mapping[str, object]) -> tuple[str, dict[str, int]]:
+def _video_section(
+    database: Database,
+    video: Mapping[str, object],
+    *,
+    days: int,
+    content_analysis: bool,
+) -> tuple[str, dict[str, int]]:
     bvid = str(video["bvid"])
     comments = list(
         database.connection.execute(
@@ -123,14 +258,19 @@ def _video_section(database: Database, video: Mapping[str, object]) -> tuple[str
     untouched = len(roots_with_replies) - fully_covered - partially_covered
 
     observations = list(database.iter_video_observations(bvid))
-    first_observation = observations[0] if observations else None
+    window_observations = _trend_window(observations, days)
+    first_observation = window_observations[0] if window_observations else None
     latest_observation = observations[-1] if observations else None
     span_hours = (
-        _duration_hours(first_observation["observed_at"], latest_observation["observed_at"])
-        if first_observation is not None and latest_observation is not None
+        _duration_hours(
+            window_observations[0]["observed_at"],
+            window_observations[-1]["observed_at"],
+        )
+        if window_observations
         else 0.0
     )
-    enough_for_trend = len(observations) >= 3 and span_hours >= 24
+    gap_count = _gap_count(window_observations)
+    enough_for_trend = len(window_observations) >= 3 and span_hours >= 24
     platform_replies = int(latest_observation["reply_count"]) if latest_observation else 0
     expected_replies = len(roots) + declared_children
 
@@ -148,10 +288,14 @@ def _video_section(database: Database, video: Mapping[str, object]) -> tuple[str
     warnings = []
     if not str(video["category_name"] or ""):
         warnings.append("missing_category_name：分区名称缺失，仅展示分区 ID")
-    if not enough_for_trend:
+    if not window_observations:
+        warnings.append(f"最近 {days} 天没有可用观测，不能判断趋势")
+    elif not enough_for_trend:
         warnings.append(
-            f"样本不足：{len(observations)} 个观测点，跨度 {span_hours:.1f} 小时，不能判断趋势"
+            f"样本不足：最近 {days} 天有 {len(window_observations)} 个观测点，跨度 {span_hours:.1f} 小时，不能判断趋势"
         )
+    if gap_count:
+        warnings.append(f"观测存在 {gap_count} 个超过 36 小时的数据缺口，折线不做插值")
     if declared_children and len(children) < declared_children:
         warnings.append(
             f"楼中楼不完整：已采集 {_number(len(children))}/{_number(declared_children)} 条"
@@ -165,8 +309,16 @@ def _video_section(database: Database, video: Mapping[str, object]) -> tuple[str
     for field, label in METRICS:
         first = int(first_observation[field]) if first_observation else 0
         latest = int(latest_observation[field]) if latest_observation else 0
-        delta = latest - first
-        metric_rows.append((label, _number(first), _number(latest), f"{delta:+,}"))
+        delta = latest - first if first_observation else 0
+        metric_rows.append(
+            (label, _number(first) if first_observation else "—", _number(latest), f"{delta:+,}" if first_observation else "—")
+        )
+
+    trend_charts = "".join(
+        _line_chart(f"{label} · 最近 {days} 天", window_observations, field)
+        for field, label in METRICS
+    )
+    content_html = _content_section(database, bvid) if content_analysis else ""
 
     date_counts: Counter[str] = Counter()
     like_counts: Counter[str] = Counter()
@@ -229,13 +381,15 @@ def _video_section(database: Database, video: Mapping[str, object]) -> tuple[str
           ('当前抓取状态', completeness),
       ))}
       <h3>视频互动观测</h3>
-      <p class="muted">{escape(trend_label)}；{len(observations)} 个观测点，跨度 {span_hours:.1f} 小时。差值仅表示首末观测差异。</p>
+      <p class="muted">{escape(trend_label)}；最近 {days} 天有 {len(window_observations)} 个观测点，跨度 {span_hours:.1f} 小时。差值仅表示窗口内首个观测与最新观测的差异。</p>
       {_table(('指标', '首次', '最近', '差值'), metric_rows)}
+      <div class="chart-grid">{trend_charts}</div>
       <div class="chart-grid">
         {_bar_chart('一级评论发布时间（按日）', sorted(date_counts.items()))}
         {_bar_chart('一级评论点赞分布', [(key, like_counts[key]) for key in ('0', '1–9', '10–99', '100+')])}
         {_bar_chart('一级评论回复数分布', [(key, reply_counts[key]) for key in ('0', '1–9', '10+')])}
       </div>
+      {content_html}
       <h3>异常运行</h3>
       {_table(('运行', '排序', '范围', '状态', '完整性', '断点', '结束原因', '错误'), run_rows)}
     </section>
@@ -248,7 +402,16 @@ def _video_section(database: Database, video: Mapping[str, object]) -> tuple[str
     }
 
 
-def generate_report(database: Database, bvids: Sequence[str], output: str | Path) -> int:
+def generate_report(
+    database: Database,
+    bvids: Sequence[str],
+    output: str | Path,
+    *,
+    content_analysis: bool = False,
+    days: int = 7,
+) -> int:
+    if days <= 0:
+        raise ConfigurationError("趋势窗口天数必须大于 0")
     placeholders = ",".join("?" for _ in bvids)
     videos = list(
         database.connection.execute(
@@ -259,7 +422,12 @@ def generate_report(database: Database, bvids: Sequence[str], output: str | Path
     sections = []
     totals = defaultdict(int)
     for video in videos:
-        section, counts = _video_section(database, video)
+        section, counts = _video_section(
+            database,
+            video,
+            days=days,
+            content_analysis=content_analysis,
+        )
         sections.append(section)
         for key, value in counts.items():
             totals[key] += value
@@ -287,7 +455,7 @@ main{{max-width:1180px;margin:auto;padding:40px 24px 80px}} h1{{font-size:34px;m
 .video{{margin-top:22px}} .video-header{{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}} .status{{white-space:nowrap;background:var(--accent-soft);color:var(--accent);padding:6px 10px;border-radius:999px;font-size:13px}}
 .cards{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:22px 0}} .card{{border:1px solid var(--line);border-radius:12px;padding:15px}} .card span{{display:block;color:var(--muted)}} .card strong{{font-size:24px}}
 .warnings{{padding-left:22px;color:var(--warn)}} .warnings .ok{{color:var(--ok)}} .table-wrap{{overflow:auto;border:1px solid var(--line);border-radius:12px}} table{{width:100%;border-collapse:collapse;min-width:620px}} th,td{{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}} th{{background:#f9fafc;font-size:13px}} tr:last-child td{{border-bottom:0}}
-.chart-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}} .chart{{border:1px solid var(--line);border-radius:12px;padding:16px;overflow:hidden}} svg{{width:100%;height:auto}} svg rect{{fill:var(--accent)}} .svg-label,.svg-value{{font-size:13px;fill:var(--text)}} footer{{color:var(--muted);margin-top:28px;text-align:center}}
+.chart-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}} .chart{{border:1px solid var(--line);border-radius:12px;padding:16px;overflow:hidden}} .chart .table-wrap{{border:0}} .subheading{{margin-top:20px}} .compact{{margin:-8px 0 4px}} svg{{width:100%;height:auto}} svg rect{{fill:var(--accent)}} .trend-line{{fill:none;stroke:var(--accent);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}} svg circle{{fill:var(--surface);stroke:var(--accent);stroke-width:3}} .svg-label,.svg-value{{font-size:13px;fill:var(--text)}} footer{{color:var(--muted);margin-top:28px;text-align:center}}
 @media(max-width:760px){{main{{padding:20px 12px 50px}}.cards{{grid-template-columns:repeat(2,1fr)}}.chart-grid{{grid-template-columns:1fr}}.video-header{{display:block}}.status{{display:inline-block;margin-top:10px}}}}
 @media print{{body{{background:#fff}}main{{max-width:none;padding:0}}.hero,.video{{box-shadow:none;break-inside:avoid}}nav{{display:none}}}}
 </style>
@@ -296,7 +464,7 @@ main{{max-width:1180px;margin:auto;padding:40px 24px 80px}} h1{{font-size:34px;m
   <section class="hero">
     <p class="eyebrow">BILI COMMENTS · OFFLINE REPORT</p>
     <h1>采集数据分析报告</h1>
-    <p class="muted">生成时间：{escape(generated_at)}。报告仅包含聚合统计，不包含评论正文或作者标识。</p>
+    <p class="muted">生成时间：{escape(generated_at)}。趋势窗口为最近 {days} 天。报告仅包含聚合统计，不包含评论正文或作者标识。</p>
     <div class="cards">
       <div class="card"><span>视频</span><strong>{_number(len(videos))}</strong></div>
       <div class="card"><span>一级评论</span><strong>{_number(totals['roots'])}</strong></div>
@@ -307,7 +475,7 @@ main{{max-width:1180px;margin:auto;padding:40px 24px 80px}} h1{{font-size:34px;m
     <nav>{navigation}</nav>
   </section>
   {''.join(sections)}
-  <footer>由 bili-comments 0.4.0 生成 · 单文件离线报告</footer>
+  <footer>由 bili-comments 0.5.0 生成 · 单文件离线报告</footer>
 </main></body></html>
 """
     destination = Path(output)

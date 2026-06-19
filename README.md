@@ -2,7 +2,7 @@
 
 匿名、低频地采集 B站公开视频元数据、互动指标和评论，保存到 SQLite，并支持数据导出和离线分析报告。
 
-当前版本：`0.4.0`，采用 [MIT License](LICENSE)。完整设计和限制见 [项目报告](PROJECT_REPORT.md)。
+当前版本：`0.5.0`，采用 [MIT License](LICENSE)。完整设计和限制见 [项目报告](PROJECT_REPORT.md)。
 
 ## 功能
 
@@ -18,6 +18,7 @@
 - CSV 目标清单、顺序批处理、失败汇总和批次恢复；
 - 可选 Parquet 导出；
 - 单文件、无外部资源的离线 HTML 数据质量与互动报告；
+- 可选的一级评论中文关键词、TF-IDF 和关键词共现分析；
 - 默认离线的脱敏契约测试。
 
 ## 安装
@@ -57,9 +58,15 @@ bili-comments --db result.db report --output report.html
 
 # 只报告指定视频
 bili-comments --db result.db report BV1xx411c7mD --output report.html
+
+# 生成最近 7 天趋势并启用一级评论内容分析
+pip install -e ".[analysis]"
+bili-comments --db result.db report --content-analysis --days 7 --output report.html
 ```
 
-报告包含采集完整性、楼中楼覆盖、互动指标首末差值、评论分布和异常运行诊断。报告不包含评论正文、昵称或用户 ID；少于 3 个观测点或时间跨度不足 24 小时时，会明确标记“样本不足，不能判断趋势”。
+报告包含采集完整性、楼中楼覆盖、互动指标首末差值、折线趋势、评论分布和异常运行诊断。趋势窗口默认以每个视频的最新观测为终点回溯 7 天；少于 3 个观测点或时间跨度不足 24 小时时，会明确标记“样本不足”，相邻观测超过 36 小时则断开折线。
+
+内容分析必须显式指定 `--content-analysis`，并安装可选的 jieba 依赖。它只分析一级评论，输出至少出现在 3 条评论中的聚合词项，不混入可能不完整的楼中楼，也不展示评论原文、完整单词评论、昵称或用户 ID。
 
 ## 批量采集
 
@@ -105,6 +112,8 @@ Parquet 是可选依赖；默认安装仍只包含 HTTP 客户端。
 
 提前创建日志目录。若任务因关机或进程终止而中断，使用 `batch status` 找到批次编号，再执行 `batch resume <ID>`；底层评论抓取会继续使用已保存检查点。
 
+需要每日更新报告时，可让系统调度脚本在 `batch run` 后执行一次 `report --content-analysis --days 7`。程序仍然只执行单次任务，不包含常驻调度器。
+
 默认数据库是 `data/comments.db`。首次打开 v0.1 数据库时会执行事务化迁移；建议仍先保留数据库备份。
 
 ## 数据与恢复语义
@@ -123,7 +132,7 @@ Parquet 是可选依赖；默认安装仍只包含 HTTP 客户端。
 - 不包含 OAuth、代理池、高并发、弹幕下载、字幕正文、用户画像或 Web UI。
 - 不包含常驻调度器；定时执行由 Windows 任务计划或 cron 负责。
 - 页面内部接口不是稳定性受保证的正式开放 API，未来变化可能需要调整 B站适配器。
-- 离线报告只基于数据库中的观测结果，不把短期差值解释为趋势。
+- 离线报告只基于数据库中的观测结果，不把短期差值解释为趋势；内容关键词也只是统计结果，不代表立场或情绪判断。
 - 请遵守平台规则和适用法律；数据库及导出数据不应提交到公开仓库。
 
 ## 测试
@@ -134,4 +143,4 @@ python -m pytest
 python -m compileall -q src tests
 ```
 
-默认测试不访问 B站。完整 Parquet 测试使用 `pip install -e ".[test,parquet]"`。GitHub Actions 在 Python 3.12 上执行两组检查。
+默认测试不访问 B站。完整 Parquet 测试使用 `pip install -e ".[test,parquet]"`，真实 jieba 测试使用 `pip install -e ".[test,analysis]"`。GitHub Actions 在 Python 3.12 上分别执行默认、Parquet 和内容分析检查。

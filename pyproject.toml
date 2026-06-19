@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bili-comments"
-version = "0.4.0"
+version = "0.5.0"
 description = "Anonymous CLI framework for public Bilibili video and comment data"
 readme = "README.md"
 license = "MIT"
@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8,<9"]
 parquet = ["pyarrow>=18,<22"]
+analysis = ["jieba>=0.42.1,<1"]
 
 [project.scripts]
 bili-comments = "bili_comments.cli:main"
@@ -27,4 +28,7 @@ packages = ["src/bili_comments"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
-markers = ["parquet: tests requiring the optional pyarrow dependency"]
+markers = [
+    "parquet: tests requiring the optional pyarrow dependency",
+    "analysis: tests requiring the optional jieba dependency",
+]
