@@ -114,3 +114,19 @@ def test_schema_does_not_store_extended_profile_fields(tmp_path) -> None:
     columns = database._columns("comments")
     assert not {"avatar", "sex", "sign", "vip", "fans_badge"} & columns
     database.close()
+
+
+def test_v2_database_migrates_to_batch_schema(tmp_path) -> None:
+    path = tmp_path / "v2.sqlite"
+    database = Database(path)
+    database.connection.execute("DROP TABLE batch_items")
+    database.connection.execute("DROP TABLE batch_runs")
+    database.connection.execute("PRAGMA user_version = 2")
+    database.connection.commit()
+    database.close()
+
+    migrated = Database(path)
+    assert migrated.connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert migrated._table_exists("batch_runs")
+    assert migrated._table_exists("batch_items")
+    migrated.close()

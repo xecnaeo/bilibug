@@ -6,6 +6,10 @@ class InvalidTargetError(BiliCommentsError):
     pass
 
 
+class ConfigurationError(BiliCommentsError):
+    pass
+
+
 class ApiError(BiliCommentsError):
     def __init__(self, message: str, *, code: int | None = None) -> None:
         super().__init__(message)

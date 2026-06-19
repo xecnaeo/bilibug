@@ -14,4 +14,4 @@ def test_inspect_outputs_local_status(tmp_path, capsys) -> None:
     assert main(["--db", str(path), "inspect", "BV1xx411c7mD"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["video"]["title"] == "标题"
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3

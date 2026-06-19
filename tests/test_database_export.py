@@ -1,6 +1,8 @@
 import csv
 import json
 
+import pytest
+
 from bili_comments.database import Database
 from bili_comments.exporter import EXPORT_FIELDS, export_comments, export_records
 from bili_comments.models import Comment, Video, VideoStats
@@ -94,4 +96,21 @@ def test_comments_from_different_videos_are_isolated(tmp_path) -> None:
         )
     assert len(list(database.iter_comments(videos[0].bvid))) == 1
     assert len(list(database.iter_comments(videos[1].bvid))) == 1
+    database.close()
+
+
+@pytest.mark.parquet
+def test_parquet_export_for_all_entities(tmp_path) -> None:
+    parquet = pytest.importorskip("pyarrow.parquet")
+    database = prepared_database(tmp_path / "db.sqlite")
+    for entity in ("comments", "video-stats", "comment-stats"):
+        output = tmp_path / f"{entity}.parquet"
+        assert export_records(
+            database, "BV1xx411c7mD", entity, "parquet", output
+        ) == 1
+        table = parquet.read_table(output)
+        assert table.num_rows == 1
+        assert set(table.column_names)
+    comments = parquet.read_table(tmp_path / "comments.parquet").to_pylist()
+    assert comments[0]["message"] == sample_comment().message
     database.close()

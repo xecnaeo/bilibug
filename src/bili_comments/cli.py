@@ -6,9 +6,10 @@ import logging
 import sys
 from pathlib import Path
 
+from .batch import resume_batch, run_manifest
 from .client import BilibiliWebSource
 from .database import Database
-from .errors import BiliCommentsError
+from .errors import BiliCommentsError, ConfigurationError
 from .exporter import ENTITY_FIELDS, export_records
 from .service import crawl_target, parse_bvid
 
@@ -29,11 +30,22 @@ def build_parser() -> argparse.ArgumentParser:
     export = subparsers.add_parser("export", help="导出已保存的数据")
     export.add_argument("target", help="BV 号或视频 URL")
     export.add_argument("--entity", choices=tuple(ENTITY_FIELDS), default="comments")
-    export.add_argument("--format", choices=("csv", "jsonl"), required=True)
+    export.add_argument("--format", choices=("csv", "jsonl", "parquet"), required=True)
     export.add_argument("--output", type=Path, required=True)
 
     inspect = subparsers.add_parser("inspect", help="查看本地视频和抓取状态")
     inspect.add_argument("target", help="BV 号或视频 URL")
+
+    batch = subparsers.add_parser("batch", help="运行和恢复批量采集")
+    batch_commands = batch.add_subparsers(dest="batch_command", required=True)
+    batch_run = batch_commands.add_parser("run", help="从 CSV 创建并运行批次")
+    batch_run.add_argument("manifest", type=Path, help="CSV 目标清单")
+    batch_run.add_argument("--summary", type=Path, help="JSON 摘要输出路径")
+    batch_resume = batch_commands.add_parser("resume", help="恢复指定批次")
+    batch_resume.add_argument("batch_id", type=int)
+    batch_resume.add_argument("--summary", type=Path, help="JSON 摘要输出路径")
+    batch_status = batch_commands.add_parser("status", help="查看批次状态")
+    batch_status.add_argument("batch_id", type=int, nargs="?")
     return parser
 
 
@@ -64,13 +76,47 @@ def main(argv: list[str] | None = None) -> int:
                     database, bvid, args.entity, args.format, args.output
                 )
                 print(f"{bvid}: 已导出 {count} 条 {args.entity} 到 {args.output}")
-            else:
+            elif args.command == "inspect":
                 bvid = parse_bvid(args.target)
                 details = database.inspect_video(bvid)
                 if details is None:
                     raise BiliCommentsError(f"数据库中没有视频 {bvid}，请先执行 crawl")
                 print(json.dumps(details, ensure_ascii=False, indent=2))
+            elif args.batch_command == "status":
+                if args.batch_id is None:
+                    details = {
+                        "batches": [dict(row) for row in database.list_batch_runs()]
+                    }
+                else:
+                    details = database.batch_details(args.batch_id)
+                print(json.dumps(details, ensure_ascii=False, indent=2))
+            else:
+                with BilibiliWebSource() as source:
+                    if args.batch_command == "run":
+                        details, exit_code = run_manifest(
+                            database,
+                            source,
+                            args.manifest,
+                            summary_path=args.summary,
+                        )
+                    else:
+                        details, exit_code = resume_batch(
+                            database,
+                            source,
+                            args.batch_id,
+                            summary_path=args.summary,
+                        )
+                batch_info = details["batch"]
+                print(
+                    f"批次 {batch_info['id']}: {batch_info['status']}，"
+                    f"成功 {batch_info['succeeded_count']}，失败 {batch_info['failed_count']}，"
+                    f"摘要 {batch_info['summary_path']}"
+                )
+                return exit_code
         return 0
+    except ConfigurationError as exc:
+        print(f"配置错误：{exc}", file=sys.stderr)
+        return 2
     except (BiliCommentsError, OSError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 1

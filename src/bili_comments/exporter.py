@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .database import Database
+from .errors import BiliCommentsError
 
 ENTITY_FIELDS = {
     "comments": (
@@ -100,6 +101,23 @@ def export_records(
             for row in rows:
                 file.write(json.dumps(_record(row, entity), ensure_ascii=False) + "\n")
                 count += 1
+    elif format_name == "parquet":
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+        except ImportError as exc:
+            raise BiliCommentsError(
+                'Parquet 导出需要可选依赖，请执行 pip install -e ".[parquet]"'
+            ) from exc
+        records = [_record(row, entity) for row in rows]
+        if records:
+            table = pa.Table.from_pylist(records)
+        else:
+            table = pa.Table.from_pydict(
+                {field: [] for field in ENTITY_FIELDS[entity]}
+            )
+        pq.write_table(table, output)
+        count = len(records)
     else:
         raise ValueError(f"unsupported export format: {format_name}")
     return count
