@@ -9,7 +9,7 @@ from pathlib import Path
 from .errors import BiliCommentsError
 from .models import Comment, Video
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 HOT_CURSOR_TTL_SECONDS = 6 * 60 * 60
 
 
@@ -60,11 +60,15 @@ class Database:
         if not self._table_exists("videos"):
             self._create_v2_schema()
             return
-        if version < SCHEMA_VERSION:
+        if version < 2:
             self._migrate_v1_to_v2()
+            version = 2
+        if version == 2:
+            self._migrate_v2_to_v3()
         else:
             with self._transaction() as connection:
                 self._create_v2_additions(connection)
+                self._create_v3_additions(connection)
 
     def _create_v2_schema(self) -> None:
         with self._transaction() as connection:
@@ -135,6 +139,7 @@ class Database:
                 """
             )
             self._create_v2_additions(connection)
+            self._create_v3_additions(connection)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _create_v2_additions(
@@ -258,7 +263,60 @@ class Database:
             )
             connection.execute("DROP INDEX IF EXISTS comments_bvid_rank")
             self._create_v2_additions(connection)
-            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.execute("PRAGMA user_version = 2")
+
+    def _create_v3_additions(
+        self, connection: sqlite3.Connection | None = None
+    ) -> None:
+        target = connection or self.connection
+        statements = (
+            """
+            CREATE TABLE IF NOT EXISTS batch_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                manifest_path TEXT NOT NULL,
+                manifest_sha256 TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                status TEXT NOT NULL CHECK (
+                    status IN ('running', 'completed', 'completed_with_errors')
+                ),
+                total_count INTEGER NOT NULL,
+                succeeded_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                summary_path TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS batch_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_run_id INTEGER NOT NULL REFERENCES batch_runs(id) ON DELETE CASCADE,
+                row_number INTEGER NOT NULL,
+                target TEXT NOT NULL,
+                bvid TEXT NOT NULL,
+                comment_order TEXT NOT NULL,
+                replies_mode TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (
+                    status IN ('pending', 'running', 'succeeded', 'failed')
+                ),
+                started_at TEXT,
+                completed_at TEXT,
+                crawl_run_id INTEGER REFERENCES crawl_runs(id),
+                error TEXT,
+                UNIQUE (batch_run_id, bvid)
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS batch_items_status
+            ON batch_items (batch_run_id, status, row_number)
+            """,
+        )
+        for statement in statements:
+            target.execute(statement)
+
+    def _migrate_v2_to_v3(self) -> None:
+        with self._transaction() as connection:
+            self._create_v3_additions(connection)
+            connection.execute("PRAGMA user_version = 3")
 
     def upsert_video(self, video: Video, source_url: str) -> None:
         now = utc_now()
@@ -748,6 +806,210 @@ class Database:
             """,
             (bvid,),
         )
+
+    def create_batch_run(
+        self,
+        manifest_path: str,
+        manifest_sha256: str,
+        items: Iterable[tuple[int, str, str, str, str]],
+    ) -> sqlite3.Row:
+        item_list = list(items)
+        now = utc_now()
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO batch_runs (
+                    manifest_path, manifest_sha256, started_at, status, total_count
+                ) VALUES (?, ?, ?, 'running', ?)
+                """,
+                (manifest_path, manifest_sha256, now, len(item_list)),
+            )
+            batch_id = int(cursor.lastrowid)
+            connection.executemany(
+                """
+                INSERT INTO batch_items (
+                    batch_run_id, row_number, target, bvid, comment_order,
+                    replies_mode, status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                ((batch_id, *item) for item in item_list),
+            )
+        return self.get_batch_run(batch_id)
+
+    def get_batch_run(self, batch_id: int) -> sqlite3.Row:
+        row = self.connection.execute(
+            "SELECT * FROM batch_runs WHERE id = ?", (batch_id,)
+        ).fetchone()
+        if row is None:
+            raise BiliCommentsError(f"批次不存在：{batch_id}")
+        return row
+
+    def list_batch_runs(self, limit: int = 20) -> list[sqlite3.Row]:
+        return list(
+            self.connection.execute(
+                "SELECT * FROM batch_runs ORDER BY id DESC LIMIT ?", (limit,)
+            )
+        )
+
+    def iter_batch_items(
+        self, batch_id: int, *, runnable_only: bool = False
+    ) -> Iterator[sqlite3.Row]:
+        if runnable_only:
+            yield from self.connection.execute(
+                """
+                SELECT * FROM batch_items
+                WHERE batch_run_id = ? AND status = 'pending'
+                ORDER BY row_number, id
+                """,
+                (batch_id,),
+            )
+        else:
+            yield from self.connection.execute(
+                """
+                SELECT * FROM batch_items
+                WHERE batch_run_id = ? ORDER BY row_number, id
+                """,
+                (batch_id,),
+            )
+
+    def set_batch_summary_path(self, batch_id: int, path: str) -> None:
+        with self._transaction() as connection:
+            connection.execute(
+                "UPDATE batch_runs SET summary_path = ? WHERE id = ?",
+                (path, batch_id),
+            )
+
+    def prepare_batch_resume(self, batch_id: int) -> sqlite3.Row:
+        self.get_batch_run(batch_id)
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                UPDATE batch_items
+                SET status = 'pending', started_at = NULL, completed_at = NULL,
+                    crawl_run_id = NULL, error = NULL
+                WHERE batch_run_id = ? AND status IN ('running', 'failed')
+                """,
+                (batch_id,),
+            )
+            connection.execute(
+                """
+                UPDATE batch_runs
+                SET status = 'running', completed_at = NULL
+                WHERE id = ?
+                """,
+                (batch_id,),
+            )
+            self._refresh_batch_counts(connection, batch_id)
+        return self.get_batch_run(batch_id)
+
+    @staticmethod
+    def _refresh_batch_counts(
+        connection: sqlite3.Connection, batch_id: int
+    ) -> None:
+        connection.execute(
+            """
+            UPDATE batch_runs
+            SET succeeded_count = (
+                    SELECT COUNT(*) FROM batch_items
+                    WHERE batch_run_id = ? AND status = 'succeeded'
+                ),
+                failed_count = (
+                    SELECT COUNT(*) FROM batch_items
+                    WHERE batch_run_id = ? AND status = 'failed'
+                )
+            WHERE id = ?
+            """,
+            (batch_id, batch_id, batch_id),
+        )
+
+    def mark_batch_item_running(self, item_id: int) -> None:
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                UPDATE batch_items
+                SET status = 'running', started_at = ?, completed_at = NULL,
+                    error = NULL
+                WHERE id = ?
+                """,
+                (utc_now(), item_id),
+            )
+
+    def mark_batch_item_succeeded(self, item_id: int, crawl_run_id: int) -> None:
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT batch_run_id FROM batch_items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                raise BiliCommentsError(f"批次项目不存在：{item_id}")
+            connection.execute(
+                """
+                UPDATE batch_items
+                SET status = 'succeeded', completed_at = ?, crawl_run_id = ?,
+                    error = NULL
+                WHERE id = ?
+                """,
+                (utc_now(), crawl_run_id, item_id),
+            )
+            self._refresh_batch_counts(connection, int(row["batch_run_id"]))
+
+    def mark_batch_item_failed(self, item_id: int, error: str) -> None:
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT batch_run_id FROM batch_items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                raise BiliCommentsError(f"批次项目不存在：{item_id}")
+            connection.execute(
+                """
+                UPDATE batch_items
+                SET status = 'failed', completed_at = ?, error = ?
+                WHERE id = ?
+                """,
+                (utc_now(), error, item_id),
+            )
+            self._refresh_batch_counts(connection, int(row["batch_run_id"]))
+
+    def latest_crawl_run_id(
+        self,
+        bvid: str,
+        *,
+        source: str,
+        comment_order: str,
+        replies_mode: str,
+    ) -> int:
+        row = self.connection.execute(
+            """
+            SELECT id FROM crawl_runs
+            WHERE bvid = ? AND source = ? AND comment_order = ?
+              AND replies_mode = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (bvid, source, comment_order, replies_mode),
+        ).fetchone()
+        if row is None:
+            raise BiliCommentsError(f"没有找到视频 {bvid} 对应的抓取运行")
+        return int(row["id"])
+
+    def finalize_batch(self, batch_id: int) -> sqlite3.Row:
+        now = utc_now()
+        with self._transaction() as connection:
+            self._refresh_batch_counts(connection, batch_id)
+            row = connection.execute(
+                "SELECT failed_count FROM batch_runs WHERE id = ?", (batch_id,)
+            ).fetchone()
+            if row is None:
+                raise BiliCommentsError(f"批次不存在：{batch_id}")
+            status = "completed_with_errors" if int(row["failed_count"]) else "completed"
+            connection.execute(
+                "UPDATE batch_runs SET status = ?, completed_at = ? WHERE id = ?",
+                (status, now, batch_id),
+            )
+        return self.get_batch_run(batch_id)
+
+    def batch_details(self, batch_id: int) -> dict[str, object]:
+        batch = self.get_batch_run(batch_id)
+        items = [dict(row) for row in self.iter_batch_items(batch_id)]
+        return {"batch": dict(batch), "items": items}
 
     def inspect_video(self, bvid: str) -> dict[str, object] | None:
         video = self.connection.execute(
