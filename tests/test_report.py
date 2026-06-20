@@ -226,10 +226,27 @@ def test_content_report_uses_only_root_comments(tmp_path, monkeypatch) -> None:
     generate_report(database, [BVID], output, content_analysis=True)
     html = output.read_text(encoding="utf-8")
     assert "一级评论内容分析" in html
+    assert "生命周期阶段主题演化" in html
+    assert "样本不足（少于20条）" in html
     assert "jieba test" in html
     assert "主题" in html
     assert "子回复词" not in html
     assert "一级 主题" not in html
+    assert html.index("讨论迁移与线程集中度") < html.index("生命周期阶段主题演化")
+    assert html.index("生命周期阶段主题演化") < html.index("一级评论内容分析")
+    database.close()
+
+
+def test_default_report_does_not_load_content_dependency(tmp_path, monkeypatch) -> None:
+    database = _prepared_database(tmp_path / "db.sqlite")
+
+    def unexpected():
+        raise AssertionError("default report must not load jieba")
+
+    monkeypatch.setattr(content, "_load_jieba", unexpected)
+    output = tmp_path / "report.html"
+    generate_report(database, [BVID], output)
+    assert "生命周期阶段主题演化" not in output.read_text(encoding="utf-8")
     database.close()
 
 

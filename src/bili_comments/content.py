@@ -5,6 +5,7 @@ import logging
 import math
 import re
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Protocol
@@ -113,7 +114,11 @@ def _load_jieba() -> JiebaModule:
     return module
 
 
-def _tokens(message: str, jieba: JiebaModule) -> tuple[str, ...]:
+def load_jieba() -> JiebaModule:
+    return _load_jieba()
+
+
+def tokenize_message(message: str, jieba: JiebaModule) -> tuple[str, ...]:
     cleaned = VIDEO_ID_PATTERN.sub(" ", MENTION_PATTERN.sub(" ", URL_PATTERN.sub(" ", message)))
     tokens = []
     for value in jieba.lcut(cleaned, cut_all=False):
@@ -128,26 +133,41 @@ def _tokens(message: str, jieba: JiebaModule) -> tuple[str, ...]:
     return tuple(tokens)
 
 
+def single_token_terms(
+    messages: Collection[str], *, jieba: JiebaModule
+) -> frozenset[str]:
+    return frozenset(
+        document[0]
+        for message in messages
+        if len(document := tokenize_message(message, jieba)) == 1
+    )
+
+
 def analyze_messages(
-    messages: list[str], *, jieba: JiebaModule | None = None
+    messages: list[str],
+    *,
+    jieba: JiebaModule | None = None,
+    minimum_document_frequency: int = MIN_DOCUMENT_FREQUENCY,
+    frequency_limit: int = FREQUENCY_LIMIT,
+    excluded_tokens: Collection[str] = (),
 ) -> ContentAnalysis:
     analyzer = jieba or _load_jieba()
-    documents = [_tokens(message, analyzer) for message in messages]
+    documents = [tokenize_message(message, analyzer) for message in messages]
     counts: Counter[str] = Counter(token for document in documents for token in document)
     document_frequencies: Counter[str] = Counter(
         token for document in documents for token in set(document)
     )
     complete_single_token_comments = {
         document[0] for document in documents if len(document) == 1
-    }
+    } | set(excluded_tokens)
     eligible = {
         token
         for token, frequency in document_frequencies.items()
-        if frequency >= MIN_DOCUMENT_FREQUENCY
+        if frequency >= minimum_document_frequency
         and token not in complete_single_token_comments
     }
     frequency_items = sorted(eligible, key=lambda token: (-counts[token], token))[
-        :FREQUENCY_LIMIT
+        :frequency_limit
     ]
     frequencies = tuple(
         Keyword(token, counts[token], document_frequencies[token])
@@ -162,7 +182,7 @@ def analyze_messages(
         for token in eligible
     }
     tfidf_items = sorted(eligible, key=lambda token: (-scores[token], token))[
-        :FREQUENCY_LIMIT
+        :frequency_limit
     ]
     tfidf = tuple(
         Keyword(token, counts[token], document_frequencies[token], scores[token])
