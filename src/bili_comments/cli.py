@@ -11,6 +11,7 @@ from .client import BilibiliWebSource
 from .database import Database
 from .errors import BiliCommentsError, ConfigurationError
 from .exporter import ENTITY_FIELDS, export_records
+from .markdown import export_markdown_corpus
 from .report import generate_report
 from .service import crawl_target, parse_bvid
 
@@ -50,6 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--content-analysis", action="store_true", help="分析一级评论关键词与共现")
     report.add_argument("--days", type=_positive_int, default=7, help="趋势窗口天数，默认 7")
 
+    markdown = subparsers.add_parser("markdown", help="生成精选评论 Markdown 语料")
+    markdown.add_argument("targets", nargs="*", help="BV 号或视频 URL；默认全部视频")
+    markdown.add_argument("--output-dir", type=Path, required=True)
+
     batch = subparsers.add_parser("batch", help="运行和恢复批量采集")
     batch_commands = batch.add_subparsers(dest="batch_command", required=True)
     batch_run = batch_commands.add_parser("run", help="从 CSV 创建并运行批次")
@@ -70,6 +75,22 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     try:
+        if args.command == "markdown":
+            bvids = []
+            for target in args.targets:
+                try:
+                    bvid = parse_bvid(target)
+                except BiliCommentsError as exc:
+                    raise ConfigurationError(str(exc)) from exc
+                if bvid not in bvids:
+                    bvids.append(bvid)
+            manifest = export_markdown_corpus(args.db, bvids, args.output_dir)
+            print(
+                f"已生成 {manifest['video_count']} 个视频、"
+                f"{manifest['selected_count']} 条精选评论的 Markdown 语料："
+                f"{args.output_dir}"
+            )
+            return 0
         with Database(args.db) as database:
             if args.command == "crawl":
                 with BilibiliWebSource() as source:

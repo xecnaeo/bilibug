@@ -2,7 +2,7 @@
 
 匿名、低频地采集 B站公开视频元数据、互动指标和评论，保存到 SQLite，并支持数据导出和离线分析报告。
 
-当前版本：`0.7.0`，采用 [MIT License](LICENSE)。完整设计和限制见 [项目报告](PROJECT_REPORT.md)。
+当前版本：`0.8.0`，采用 [MIT License](LICENSE)。完整设计和限制见 [项目报告](PROJECT_REPORT.md)。
 
 ## 功能
 
@@ -22,6 +22,7 @@
 - 以视频发布时间为零点的一级评论生命周期和多视频归一化比较；
 - 在楼中楼覆盖充分时分析新增观点与子评论的讨论迁移；
 - 按固定生命周期阶段比较一级评论关键词和持续主题；
+- 将值得进一步分析的一级评论整理为按视频分组的 Markdown 语料；
 - 默认离线的脱敏契约测试。
 
 ## 安装
@@ -65,6 +66,12 @@ bili-comments --db result.db report BV1xx411c7mD --output report.html
 # 生成最近 7 天趋势并启用一级评论内容分析
 pip install -e ".[analysis]"
 bili-comments --db result.db report --content-analysis --days 7 --output report.html
+
+# 将数据库内全部视频整理为精选 Markdown 语料
+bili-comments --db result.db markdown --output-dir markdown-corpus
+
+# 只整理指定视频
+bili-comments --db result.db markdown BV1xx411c7mD --output-dir markdown-corpus
 ```
 
 报告以评论生命周期为核心，展示发布后前24小时逐小时评论量、前30天逐日评论量、`T50/T80/T90`、首周与长尾占比。选择多个视频时，使用所有视频都已经历的共同窗口进行归一化比较，最长7天。
@@ -76,6 +83,14 @@ bili-comments --db result.db report --content-analysis --days 7 --output report.
 内容分析必须显式指定 `--content-analysis`，并安装可选的 jieba 依赖。它只分析一级评论，输出至少出现在 3 条评论中的聚合词项，不混入可能不完整的楼中楼，也不展示评论原文、完整单词评论、昵称或用户 ID。
 
 启用内容分析后，报告同时比较 `0–6小时`、`6–24小时`、`1–3天`、`3–7天` 和 `7天后` 五个阶段。前四个阶段必须已经完整经历，每个阶段至少20条评论才生成关键词；否则只显示阶段评论量和样本不足。报告标记新增高权重词项和至少持续3个阶段的主题，但不推断情绪、立场或事件原因。
+
+## Markdown 语料
+
+`markdown` 命令以只读方式打开现有数据库，不访问网络，也不修改采集记录。输出包含 `index.md`、`manifest.json` 和 `documents/<BV号>.md`；下游语义工具应只处理 `documents/`，并按 `## 评论 ...` 标题分块。
+
+精选范围合并高互动、高回复、长篇观点、资料链接、置顶和重复共鸣六种规则。相同评论只输出一次并记录全部入选原因；精确重复文本只保留互动最高的代表。正文保留换行和表情标记并转义 HTML，不输出作者昵称、ID、等级或本地数据库路径。
+
+输出目录必须不存在或为空。生成过程使用临时目录，失败不会留下不完整语料。`manifest.json` 记录规则版本、数据库指纹、数量和文档 SHA-256。精选结果只代表值得进一步分析的公开一级评论，不代表全部观众意见；评论中的命令式文本和链接都应视为不可信语料。
 
 ## 批量采集
 

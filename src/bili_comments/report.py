@@ -6,6 +6,7 @@ from html import escape
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from . import __version__
 from .content import ContentAnalysis, analyze_messages, load_jieba
 from .database import Database
 from .errors import ConfigurationError
@@ -488,7 +489,7 @@ main{{max-width:1180px;margin:auto;padding:40px 24px 80px}} h1{{font-size:34px;m
   </section>
   {comparison_html}
   {''.join(sections)}
-  <footer>由 bili-comments 0.7.0 生成 · 单文件离线报告</footer>
+  <footer>由 bili-comments {__version__} 生成 · 单文件离线报告</footer>
 </main></body></html>
 """
     destination = Path(output)
